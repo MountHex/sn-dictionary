@@ -487,6 +487,9 @@ const makeHarness = async (opts: {
 }): Promise<Harness> => {
   const baseDb = await makeBaseDb();
   const userDb = await createSeededDb(opts.userDbSeed ?? (async () => undefined));
+  const wiktionaryDb = await createSeededDb(async d => {
+    await d.run(CREATE_ENTRIES_TABLE);
+  });
   const enableButtons = jest.fn(async () => {
     if (opts.enableButtonsThrows) {
       throw new Error('button bridge down');
@@ -555,6 +558,7 @@ const makeHarness = async (opts: {
         }
         return userDb;
       },
+      openBundledDb: filename => async () => wiktionaryDb,
       openImportedDb,
       // F4: slug-health probe (default every slug healthy). noSlugProbe
       // omits it to model a legacy host (all slugs treated unhealthy).
@@ -684,14 +688,19 @@ jest.mock('../src/core/dict/sqlite/runImport', () => {
 });
 
 describe('bootstrap', () => {
-  it('builds the registry in [user, ...imported, base] precedence (IV-3)', async () => {
+  it('builds the registry in [user, ...imported, wiktionary, base] precedence (IV-3)', async () => {
     const h = await makeHarness({
       auditSeed: async db => {
         await upsertImport(db, auditRow('Imported', 'de', 'imported.de.db'));
       },
     });
     const handle = await bootstrap(h.ports);
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Imported', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual([
+  'User',
+  'Imported',
+  'English Wiktionary',
+  'WordNet',
+]);
     expect(handle.userDb).not.toBeNull();
   });
 
@@ -712,7 +721,10 @@ describe('bootstrap', () => {
     const warn = jest.fn();
     const handle = await bootstrap(h.ports, {warn});
     expect(handle.userDb).toBeNull();
-    expect(handle.sources.map(s => s.name)).toEqual(['WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual([
+  'English Wiktionary',
+  'WordNet',
+]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('user.db unavailable'));
     // Buttons were still enabled (base provisioned fine).
     expect(h.enableButtons).toHaveBeenCalledTimes(1);
@@ -748,30 +760,32 @@ describe('bootstrap', () => {
     expect(handle.sources.map(s => s.name)).toEqual([
       'User',
       'Existing',
+      'English Wiktionary',
       'WordNet',
     ]);
     // The lookup already works against the ready sources.
     const res = await handle.lookup.lookup('hello');
     expect(res.hits.some(hit => hit.source === 'WordNet')).toBe(true);
     // Release the import; after importsSettled, 'Fresh' is spliced
-    // just-before base.
+    // just-before the bundled dictionaries.
     releaseImport();
     await handle.importsSettled;
     expect(handle.sources.map(s => s.name)).toEqual([
       'User',
       'Existing',
       'Fresh',
+      'English Wiktionary',
       'WordNet',
     ]);
     expect(handle.sources[handle.sources.length - 1].name).toBe('WordNet');
   });
 
-  it('splices a successfully imported source just-before base (after importsSettled)', async () => {
+  it('splices a successfully imported source just-before the bundled dictionaries (after importsSettled)', async () => {
     const h = await makeHarness({descriptors: [descriptor('Fresh', 'en')]});
     const handle = await bootstrap(h.ports);
     await handle.importsSettled;
-    // [User, Fresh, WordNet] — Fresh spliced at length-1 (before base).
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Fresh', 'WordNet']);
+    // [User, Fresh, English Wiktionary, WordNet] — Fresh spliced before the bundled dictionaries.
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Fresh', 'English Wiktionary', 'WordNet']);
     expect(handle.sources[handle.sources.length - 1].name).toBe('WordNet');
   });
 
@@ -791,7 +805,7 @@ describe('bootstrap', () => {
     const warn = jest.fn();
     const handle = await bootstrap(h.ports, {warn});
     await handle.importsSettled;
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('failed: verify failed'));
   });
 
@@ -815,6 +829,7 @@ describe('bootstrap', () => {
       'User',
       'OnlyAudit',
       'ReAdd',
+      'English Wiktionary',
       'WordNet',
     ]);
   });
@@ -826,7 +841,7 @@ describe('bootstrap', () => {
     };
     const warn = jest.fn();
     const handle = await bootstrap(h.ports, {warn});
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('discover threw'));
   });
 
@@ -841,7 +856,7 @@ describe('bootstrap', () => {
     const handle = await bootstrap(h.ports, {warn});
     await handle.importsSettled;
     // Source not added; bootstrap still resolves.
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('threw'));
   });
 
@@ -867,6 +882,7 @@ describe('bootstrap — live sourceLang map (FR1)', () => {
     });
     const handle = await bootstrap(h.ports);
     expect(handle.sourceLang).toEqual({
+      'English Wiktionary': 'en',
       WordNet: 'en',
       User: 'und',
       Existing: 'de',
@@ -910,7 +926,7 @@ describe('bootstrap — live sourceLang map (FR1)', () => {
   it('degraded user.db -> sourceLang has only the base (no User, no imports)', async () => {
     const h = await makeHarness({userDbThrows: true});
     const handle = await bootstrap(h.ports, {warn: jest.fn()});
-    expect(handle.sourceLang).toEqual({WordNet: 'en'});
+    expect(handle.sourceLang).toEqual({'English Wiktionary': 'en', WordNet: 'en'});
   });
 });
 
@@ -923,7 +939,7 @@ describe('bootstrap — CSV import dispatch (FR6)', () => {
     const handle = await bootstrap(h.ports);
     await handle.importsSettled;
     // The CSV import spliced its source just before base.
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'English Wiktionary', 'WordNet']);
     // And its language registered LIVE.
     expect(handle.sourceLang.Dune).toBe('en');
   });
@@ -943,7 +959,7 @@ describe('bootstrap — CSV import dispatch (FR6)', () => {
     const names = handle.sources.map(s => s.name);
     expect(names[0]).toBe('User');
     expect(names[names.length - 1]).toBe('WordNet');
-    expect(new Set(names)).toEqual(new Set(['User', 'Wiki', 'Dune', 'WordNet']));
+    expect(new Set(names)).toEqual(new Set(['User', 'Wiki', 'Dune', 'English Wiktionary', 'WordNet']));
     expect(handle.sourceLang).toMatchObject({Wiki: 'de', Dune: 'en'});
   });
 });
@@ -977,7 +993,7 @@ describe('bootstrap — user.db phonetic migration (FR2)', () => {
     // user.db try/catch, degrading to base-only (userDb null).
     const handle = await bootstrap(h.ports, {warn: jest.fn()});
     expect(handle.userDb).toBeNull();
-    expect(handle.sources.map(s => s.name)).toEqual(['WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['English Wiktionary', 'WordNet']);
   });
 
   it('is idempotent: a fresh 7-col user.db (with phonetic) is a no-op, no throw', async () => {
@@ -1019,7 +1035,7 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
     sortOrder: number,
   ): DictPref => ({prefKey, name, enabled, sortOrder, removable: false});
 
-  it('exposes the FULL registry as allSources [user, ...imported, base]', async () => {
+  it('exposes the FULL registry as allSources [user, ...imported, wiktionary, base]', async () => {
     const h = await makeHarness({
       auditSeed: async db => {
         await upsertImport(db, auditRow('Imported', 'de', 'imported.de.db'));
@@ -1029,6 +1045,7 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
     expect(handle.allSources.map(s => s.name)).toEqual([
       'User',
       'Imported',
+      'English Wiktionary',
       'WordNet',
     ]);
   });
@@ -1040,10 +1057,11 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
       },
     });
     const handle = await bootstrap(h.ports);
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'English Wiktionary', 'WordNet']);
     expect(handle.allSources.map(s => s.name)).toEqual([
       'User',
       'Dune',
+      'English Wiktionary',
       'WordNet',
     ]);
   });
@@ -1070,7 +1088,7 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
     });
     const handle = await bootstrap(h.ports);
     // Excluded from the live (snapshotted) sources...
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
     // ...but still present in the full registry (so it can be re-enabled).
     expect(handle.allSources.map(s => s.name)).toContain('Dune');
     // And a lookup over a Dune-only word returns no Dune hit.
@@ -1105,6 +1123,7 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
       'WordNet',
       'User',
       'Dune',
+      'English Wiktionary',
     ]);
   });
 
@@ -1112,14 +1131,15 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
     const h = await makeHarness({descriptors: [descriptor('Fresh', 'en')]});
     const handle = await bootstrap(h.ports);
     await handle.importsSettled;
-    // Pushed into the full registry just-before base...
+    // Pushed into the full registry just-before the bundled dictionaries...
     expect(handle.allSources.map(s => s.name)).toEqual([
       'User',
       'Fresh',
+      'English Wiktionary',
       'WordNet',
     ]);
     // ...and the live sources recomputed (enabled by default, before base).
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Fresh', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Fresh', 'English Wiktionary', 'WordNet']);
   });
 
   it('a detached import honours an existing reorder pref (recompute, not append)', async () => {
@@ -1135,12 +1155,13 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
     });
     const handle = await bootstrap(h.ports);
     await handle.importsSettled;
-    // Fresh (no pref) defaults to its natural slot (just-before base);
+    // Fresh (no pref) defaults to its natural slot (just-before the bundled dictionaries);
     // the persisted WordNet-over-User order is preserved.
     expect(handle.sources.map(s => s.name)).toEqual([
       'WordNet',
       'User',
       'Fresh',
+      'English Wiktionary',
     ]);
   });
 
@@ -1167,7 +1188,8 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
     const dune = prefs.find(p => p.name === 'Dune');
     expect(dune).toMatchObject({enabled: false, removable: true});
     expect(prefs.find(p => p.name === 'WordNet')?.removable).toBe(false);
-    expect(prefs.map(p => p.name).sort()).toEqual(['Dune', 'User', 'WordNet']);
+    expect(prefs.find(p => p.name === 'English Wiktionary')?.removable).toBe(false);
+    expect(prefs.map(p => p.name).sort()).toEqual(['Dune', 'English Wiktionary', 'User', 'WordNet']);
   });
 
   it('setDictPrefs persists AND recomputes the SAME live sources array (AC3)', async () => {
@@ -1178,7 +1200,7 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
     });
     const handle = await bootstrap(h.ports);
     const liveRef = handle.sources; // capture the reference
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'English Wiktionary', 'WordNet']);
     // Disable Dune.
     await handle.setDictPrefs([
       prefRow('User', 'User', true, 0),
@@ -1193,7 +1215,7 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
     ]);
     // SAME array reference, mutated in place (no reassignment).
     expect(handle.sources).toBe(liveRef);
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
     // Persisted: a fresh listDictPrefs reflects the disable.
     expect((await handle.listDictPrefs()).find(p => p.name === 'Dune')?.enabled).toBe(
       false,
@@ -1210,19 +1232,22 @@ describe('bootstrap — F3 dictionary manager (allSources + prefs)', () => {
       },
       prefRow('WordNet', 'WordNet', true, 2),
     ]);
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'English Wiktionary', 'WordNet']);
   });
 
   it('degraded user.db: listDictPrefs returns natural defaults, setDictPrefs still recomputes', async () => {
     const h = await makeHarness({userDbThrows: true});
     const handle = await bootstrap(h.ports, {warn: jest.fn()});
     // Only base survives; no User, no imports.
-    expect(handle.allSources.map(s => s.name)).toEqual(['WordNet']);
+    expect(handle.allSources.map(s => s.name)).toEqual(['English Wiktionary', 'WordNet']);
     const prefs = await handle.listDictPrefs();
-    expect(prefs.map(p => p.name)).toEqual(['WordNet']);
+    expect(prefs.map(p => p.name)).toEqual(['English Wiktionary', 'WordNet']);
     expect(prefs[0].enabled).toBe(true);
     // setDictPrefs no-ops the persist (null db) but still recomputes live.
-    await handle.setDictPrefs([prefRow('WordNet', 'WordNet', false, 0)]);
+    await handle.setDictPrefs([
+  prefRow('English Wiktionary', 'English Wiktionary', false, 0),
+  prefRow('WordNet', 'WordNet', false, 1),
+]);
     expect(handle.sources.map(s => s.name)).toEqual([]);
   });
 });
@@ -1246,7 +1271,7 @@ describe('bootstrap — F4 keep-then-rescan (the loop is broken, AC3)', () => {
     await handle.importsSettled;
     // 'Kept' present exactly once (opened, not re-imported + spliced).
     expect(handle.sources.filter(s => s.name === 'Kept')).toHaveLength(1);
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Kept', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Kept', 'English Wiktionary', 'WordNet']);
     // No import was dispatched -> the delete gate was never even reached.
     expect(h.keepSourcesSeen).toEqual([]);
   });
@@ -1831,7 +1856,7 @@ describe('bootstrap — F7 deleteImportedDict (full removal, AC1)', () => {
     const h = await seedDune();
     const handle = await bootstrap(h.ports);
     // Dune is opened (eager) and present in both registries.
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Dune', 'English Wiktionary', 'WordNet']);
     expect(handle.allSources.map(s => s.name)).toContain('Dune');
 
     const res = await handle.deleteImportedDict(DUNE_KEY);
@@ -1841,7 +1866,7 @@ describe('bootstrap — F7 deleteImportedDict (full removal, AC1)', () => {
       sourcesAtRisk: false,
     });
     // Gone from BOTH the live sources and the full registry.
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
     expect(handle.allSources.map(s => s.name)).not.toContain('Dune');
     // Slug handle closed AND its file deleted; the source set deleted too.
     expect(h.closedSlugs).toContain('dune.en.db');
@@ -1933,7 +1958,7 @@ describe('bootstrap — F7 splice BEFORE close (in-flight lookup safe, AC6/EC9)'
     // And the splice DID precede the close: by the time close ran, Dune was
     // already out of the live registry.
     expect(h.closedSlugs).toContain('dune.en.db');
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
   });
 });
 
@@ -2011,6 +2036,7 @@ describe('bootstrap — F7 same-named survivor keeps its language (M1)', () => {
       'User',
       'Atlas',
       'Atlas',
+      'English Wiktionary',
       'WordNet',
     ]);
     expect(handle.sourceLang.Atlas).toBeDefined();
@@ -2076,7 +2102,7 @@ describe('bootstrap — F7 no resurrection (AC2/FR4)', () => {
     // descriptor) -> Dune does NOT come back.
     const handle2 = await bootstrap(h.ports);
     await handle2.importsSettled;
-    expect(handle2.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle2.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
     expect(handle2.allSources.map(s => s.name)).not.toContain('Dune');
     // No import was dispatched on the 2nd boot (the loop is truly broken).
     expect(h.keepSourcesSeen).toEqual([]);
@@ -2100,7 +2126,7 @@ describe('bootstrap — F7 source set not removable (AC3)', () => {
     const res = await handle.deleteImportedDict(DUNE_KEY);
     // The dict is still fully removed from the runtime + audit/pref...
     expect(res.ok).toBe(true);
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
     // ...but the leftover source set could not be removed -> warn the user.
     // A descriptor matched AND a file survived, so this is a real resurrection
     // risk: sourcesAtRisk is the signal the UI warns on (distinct from
@@ -2202,7 +2228,7 @@ describe('bootstrap — F7 idempotent / partial delete (AC5/FR5/EC10)', () => {
     // No delete was attempted, so there's no resurrection risk -> no UI warning.
     expect(res.sourcesAtRisk).toBe(false);
     // Still removed from the runtime registries.
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
   });
 
   it('resolves the audit identity from the prefKey when no live source matches', async () => {
@@ -2257,21 +2283,22 @@ describe('bootstrap — F7 x F3 cross-feature delete', () => {
     });
     const handle = await bootstrap(h.ports);
     // Live `sources`: reordered, Atlas excluded (disabled), Dune present.
-    expect(handle.sources.map(s => s.name)).toEqual(['WordNet', 'Dune', 'User']);
+    expect(handle.sources.map(s => s.name)).toEqual(['WordNet', 'Dune', 'User', 'English Wiktionary']);
     // Full registry holds every opened source (natural order).
     expect(handle.allSources.map(s => s.name)).toEqual([
       'User',
       'Dune',
       'Atlas',
+      'English Wiktionary',
       'WordNet',
     ]);
 
     const res = await handle.deleteImportedDict(DUNE_KEY);
     expect(res.ok).toBe(true);
     // Atlas RETAINED (still disabled), Dune gone from the full registry.
-    expect(handle.allSources.map(s => s.name)).toEqual(['User', 'Atlas', 'WordNet']);
+    expect(handle.allSources.map(s => s.name)).toEqual(['User', 'Atlas', 'English Wiktionary', 'WordNet']);
     // The reorder is PRESERVED (WordNet still on top); Atlas still excluded.
-    expect(handle.sources.map(s => s.name)).toEqual(['WordNet', 'User']);
+    expect(handle.sources.map(s => s.name)).toEqual(['WordNet', 'English Wiktionary', 'User']);
   });
 
   // P1-2: import a fresh dict AFTER a reorder pref, then delete that
@@ -2328,7 +2355,8 @@ describe('bootstrap — F7 x F3 cross-feature delete', () => {
         await setDictPrefs(db, [
           {prefKey: 'User', name: 'User', enabled: false, sortOrder: 0, removable: false},
           {prefKey: DUNE_KEY, name: 'Dune', enabled: false, sortOrder: 1, removable: true},
-          {prefKey: 'WordNet', name: 'WordNet', enabled: false, sortOrder: 2, removable: false},
+          {prefKey: 'English Wiktionary', name: 'English Wiktionary', enabled: false, sortOrder: 2, removable: false},
+          {prefKey: 'WordNet', name: 'WordNet', enabled: false, sortOrder: 3, removable: false},
         ]);
       },
     });
@@ -2339,14 +2367,14 @@ describe('bootstrap — F7 x F3 cross-feature delete', () => {
     expect(res.ok).toBe(true);
     // Live set stays empty-but-valid; allSources lost ONLY Dune.
     expect(handle.sources).toEqual([]);
-    expect(handle.allSources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.allSources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
 
     // Re-enabling the survivors recomputes the live set correctly (no Dune).
     await handle.setDictPrefs([
       {prefKey: 'User', name: 'User', enabled: true, sortOrder: 0, removable: false},
       {prefKey: 'WordNet', name: 'WordNet', enabled: true, sortOrder: 1, removable: false},
     ]);
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
   });
 
   // P1-4: keep=false — runImport deletes the source set, so the delete finds
@@ -2390,7 +2418,7 @@ describe('bootstrap — F7 x F3 cross-feature delete', () => {
     const handle2 = await bootstrap(h.ports);
     await handle2.importsSettled;
     expect(handle2.allSources.map(s => s.name)).not.toContain('Fresh');
-    expect(handle2.sources.map(s => s.name)).toEqual(['User', 'WordNet']);
+    expect(handle2.sources.map(s => s.name)).toEqual(['User', 'English Wiktionary', 'WordNet']);
   });
 });
 
@@ -2520,7 +2548,7 @@ describe('bootstrap — F7 detached-import eager-open failure (handle stays null
     const handle = await bootstrap(h.ports, {warn});
     await handle.importsSettled;
     // The source is still spliced in (it just lacks an eager handle).
-    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Fresh', 'WordNet']);
+    expect(handle.sources.map(s => s.name)).toEqual(['User', 'Fresh', 'English Wiktionary', 'WordNet']);
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('open imported "Fresh"'),
     );

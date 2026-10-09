@@ -1,9 +1,9 @@
 // Runtime composition root (TF7-FR1/FR2/FR4). Wires the SQLite engine
 // together off any concrete device: provision base.db, open user.db,
 // reconcile + open already-imported dicts, build the multiDict registry
-// in precedence order [user, ...imported, base] (IV-3), then dispatch
+// in precedence order [user, ...imported, wiktionary, base] (IV-3), then dispatch
 // pending sideload imports in the background, splicing each new source
-// in just-before base as it lands.
+// in just-before the bundled dictionaries as it lands.
 //
 // Everything environmental is behind BootstrapPorts so this is fully
 // host-tested with fakes. The thin device shell (index.js) supplies the
@@ -86,6 +86,7 @@ export type ImportedSourceRecord = {
 
 export interface BootstrapDbPorts {
   openUserDb(): Promise<SqliteDb>;
+  openBundledDb(filename: string): OpenSqliteDb;
   openImportedDb(filename: string): OpenSqliteDb;
   // F4-FR3: probe whether a recorded slug DB still exists on disk
   // (existence is enough for v1 — OQ6). Used to build the `slugHealthy`
@@ -259,7 +260,10 @@ export const bootstrap = async (
     openDb: async () => baseDb,
     format: 'wordnet',
   });
-
+  const wiktionarySource = createSqliteDictSource({
+    name: 'English Wiktionary',
+    openDb: ports.db.openBundledDb('wiktionary.db'),
+  });
   // 2. Buttons on — base works. Fire-once, BEFORE imports, after a
   //    successful base provision only.
   try {
@@ -492,6 +496,7 @@ export const bootstrap = async (
       handle,
     });
   }
+  register(wiktionarySource, 'en', false);
   register(baseSource, 'en', false);
 
   // Read persisted prefs (degraded user.db -> []) and DERIVE the live
@@ -508,7 +513,10 @@ export const bootstrap = async (
   // base (WordNet = 'en'), the user source ('und' — user entries are
   // language-undetermined), and every already-imported source (its audit
   // row's lang). Detached imports (step 7) add their entry on splice.
-  const sourceLang: Record<string, string> = {[baseSource.name]: 'en'};
+  const sourceLang: Record<string, string> = {
+    [wiktionarySource.name]: 'en',
+    [baseSource.name]: 'en',
+  };
   if (userSource !== null) {
     sourceLang[userSource.name] = 'und';
   }
@@ -599,11 +607,11 @@ export const bootstrap = async (
                 ? async () => handle
                 : ports.db.openImportedDb(result.filename);
             const src = createSqliteDictSource({name: result.name, openDb});
-            // Push the new source into the FULL registry just-before base
-            // (base is always last, so splice at length-1 keeps
-            // [user, ...imported, base] even as concurrent results land),
+            // Push the new source into the FULL registry just-before the bundled dictionaries
+            // (the two bundled dictionaries stay at the tail, so splice at length-2 keeps
+            // [user, ...imported, wiktionary, base] even as concurrent results land),
             // then register its identity (imported -> removable).
-            allSources.splice(allSources.length - 1, 0, src);
+            allSources.splice(allSources.length - 2, 0, src);
             const prefKey = dictPrefKey(src.name, lang, true);
             identities.set(src, {
               name: src.name,

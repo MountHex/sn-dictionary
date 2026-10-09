@@ -264,6 +264,7 @@ const bootstrapPorts = {
       }
       return db;
     },
+    openBundledDb: filename => openDbByName(filename),
     openImportedDb: filename => openDbByName(filename),
     // F4-FR3: slug-DB health probe (existence is enough for v1). The slug
     // lives at PLUGIN_LOCATION/<filename> (relative); RTNFileUtils.exists

@@ -874,7 +874,18 @@ main() {
     cp "$project_root/build/base.db" "$gen_dir/base.db" \
         || { write_color_output "Could not stage base.db into $gen_dir" "Red"; exit 1; }
     write_color_output "Staged base.db -> $gen_dir/base.db (ships at .snplg root)" "Green"
+    # Stage the prebuilt English Wiktionary database. Unlike base.db this is
+    # intentionally NOT regenerated on every plugin build: the source is large
+    # and the compact SQLite build is an explicit off-device preparation step.
+    if [[ ! -f "$project_root/build/wiktionary.db" ]]; then
+	write_color_output "wiktionary.db missing — run the Wiktionary DB builder first" "Red"
+	exit 1
+    fi
 
+    cp "$project_root/build/wiktionary.db" "$gen_dir/wiktionary.db" \
+	|| { write_color_output "Could not stage wiktionary.db into $gen_dir" "Red"; exit 1; }
+
+    write_color_output "Staged wiktionary.db -> $gen_dir/wiktionary.db (ships at .snplg root)" "Green"
     build_react_native_bundle "$project_root" "$PACKAGE_NAME" "$gen_dir"
 
     local root_cfg="$project_root/PluginConfig.json"

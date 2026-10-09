@@ -112,3 +112,6 @@ logcat.txt
 
 # Local specs / planning docs (not committed)
 spec/
+
+# English Wiktionary StarDict source — local build input, not committed.
+dict/wiktionary/
