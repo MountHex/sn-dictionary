@@ -1,3 +1,38 @@
+## MountHex English Wiktionary build
+
+This branch contains a custom Supernote build of SnDict, based on the current upstream `j-raghavan/sn-dictionary` release **v1.3.7** at the time this build was created, with a prebuilt English-English Wiktionary dictionary bundled directly into the plugin.
+
+### Why this build exists
+
+The large English Wiktionary StarDict source could not be imported reliably on-device. Its `.syn` alias data caused the normal import path to duplicate full definitions for aliases, producing an extremely large SQLite database and making the import impractical on Supernote hardware.
+
+This build moves that preparation step off-device.
+
+### What changed
+
+- Uses the English-English Wiktionary StarDict source from `xxyzz/wiktionary_stardict`.
+- Converts the source on a desktop into a compact SQLite database before packaging.
+- Stores each canonical definition once and maps canonical words and aliases to that definition through lookup keys.
+- Bundles the resulting `wiktionary.db` directly inside the `.snplg`.
+- Adds **English Wiktionary** as a built-in, non-removable dictionary alongside **WordNet**.
+- Keeps user/imported dictionaries ahead of the bundled dictionaries in lookup precedence.
+- Adds `npm run build:wiktionary-db` for rebuilding the bundled database.
+- Keeps the original StarDict source files and generated database out of Git.
+
+The resulting plugin remains fully offline at lookup time. The installed plugin uses approximately **1.3 GB of storage**, so it is significantly larger than the upstream build and will take noticeably longer to install on the Supernote.
+
+### Dictionary source and licence
+
+The bundled English-English Wiktionary data comes from:
+
+- `xxyzz/wiktionary_stardict`
+- English-English Wiktionary snapshot used for this build: 2026-09-01
+- Licence: CC BY-SA 4.0
+
+The original SnDict project and its existing bundled dictionary components retain their respective licences.
+
+---
+
 # Dictionary Plugin for Supernote
 
 ![Tests](https://img.shields.io/badge/tests-1118%20passed-brightgreen)
