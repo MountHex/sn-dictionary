@@ -38,7 +38,7 @@ const DICT_DIR = join(PROJECT_ROOT, 'dict', 'wordnet');
 // To rotate the archive: download once, run `shasum -a 256` on it,
 // and update both URL and EXPECTED_SHA256.
 const URL =
-  'http://download.huzheng.org/dict.org/stardict-dictd_www.dict.org_wn-2.4.2.tar.bz2';
+  'https://stardict.uber.space/dict.org/stardict-dictd_www.dict.org_wn-2.4.2.tar.bz2';
 const EXPECTED_SHA256 =
   '27dfc985076b4b70706bfc50172f2645bb8371f61ad6fc3c08ed093ef2bdb2ef';
 const ARCHIVE_NAME = 'stardict-wordnet.tar.bz2';
